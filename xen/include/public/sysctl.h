@@ -594,6 +594,48 @@ DEFINE_XEN_GUEST_HANDLE(xen_sysctl_cpupool_op_t);
  * Some common error return values like -ENOMEM and -EFAULT are possible for
  * all the operations.
  */
+////////////////////////////////////////////////////////////////////////////////
+// System control structure for gang-scheduled domains.  
+////////////////////////////////////////////////////////////////////////////////
+
+#define GANG_SCHED_MAX_DOMAINS (64)
+#define GANG_SCHED_MAX_CPUS    (64)
+
+/**
+ * Configuration for a gang-scheduled domain.
+ */
+typedef struct gang_sched_domain_conf {
+    /** Domain ID. */
+    int32_t domid;
+
+    /** Bitmap with the assigned CPUs for the domain. */
+    struct xenctl_bitmap cpumap; 
+
+    /** Specification of the gang-scheduling policy for the domain. */
+    gang_sched_policy_t gang_sched_policy;
+
+} gang_sched_dom_conf_t;
+
+
+/**
+ * This structure is used to pass parameters for gang-scheduled domains from a
+ * privileged domain (ie Domain 0) to Xen.
+ */
+struct xen_sysctl_gang_schedule {
+
+    /**  Holds the number of valid entries in the dom_entries[] array. */
+    uint16_t num_dom_entries;
+
+    /* Array that holds the domain configuration entries. */
+    gang_sched_dom_conf_t dom_entries[GANG_SCHED_MAX_DOMAINS];
+
+};
+
+typedef struct xen_sysctl_gang_schedule xen_sysctl_gang_schedule_t;
+DEFINE_XEN_GUEST_HANDLE(xen_sysctl_gang_schedule_t);
+
+////////////////////////////////////////////////////////////////////////////////
+
 
 #define ARINC653_MAX_DOMAINS_PER_SCHEDULE   64
 /*
@@ -649,6 +691,10 @@ struct xen_sysctl_scheduler_op {
             XEN_GUEST_HANDLE_64(xen_sysctl_arinc653_schedule_t) schedule;
         } sched_arinc653;
         struct xen_sysctl_credit_schedule sched_credit;
+
+        struct xen_sysctl_sched_gang {
+            XEN_GUEST_HANDLE_64(xen_sysctl_gang_schedule_t) params;
+        } sched_gang;
     } u;
 };
 typedef struct xen_sysctl_scheduler_op xen_sysctl_scheduler_op_t;

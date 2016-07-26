@@ -37,6 +37,7 @@ obj-$(CONFIG_SCHED_ARINC653) += sched_arinc653.o
 obj-$(CONFIG_SCHED_CREDIT) += sched_credit.o
 obj-$(CONFIG_SCHED_CREDIT2) += sched_credit2.o
 obj-$(CONFIG_SCHED_RTDS) += sched_rt.o
+obj-y += sched_gang.o
 obj-y += schedule.o
 obj-y += shutdown.o
 obj-y += softirq.o
@@ -59,6 +60,9 @@ obj-y += vsprintf.o
 obj-y += wait.o
 obj-$(CONFIG_XENOPROF) += xenoprof.o
 obj-y += xmalloc_tlsf.o
+obj-y += hashtable.o
+obj-y += hashtable_itr.o
+obj-y += barrier.o
 
 obj-bin-$(CONFIG_X86) += $(foreach n,decompress bunzip2 unxz unlzma unlzo unlz4 earlycpio,$(n).init.o)
 

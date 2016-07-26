@@ -5,6 +5,12 @@
  *
  * Copyright (c) 2003-2004, K A Fraser.
  *
+ * xc_gnttab functions:
+ * Copyright (c) 2007-2008, D G Murray <Derek.Murray@cl.cam.ac.uk>
+ *
+ * xc_sched_gang_xxx functions:
+ * Copyright (c) 2014, Juan A. Colmenares <juancol@eecs.berkeley.edu>
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation;
@@ -949,6 +955,71 @@ xc_sched_arinc653_schedule_get(
     xc_interface *xch,
     uint32_t cpupool_id,
     struct xen_sysctl_arinc653_schedule *schedule);
+
+
+////////////////////////////////////////////////////////////////////////////////
+// System control functions for gang scheduling
+////////////////////////////////////////////////////////////////////////////////
+
+
+/**
+ * Structure for the control parameters of gang-scheduled domains.
+ *
+ * This structure is very similar to 'xen_sysctl_gang_schedule_t' defined
+ * $XEN_DIR/xen/include/public/sysctl.h.
+ */
+struct gang_sched_params {
+
+    /**  Holds the number of valid entries in the dom_entries[] array. */
+    uint16_t num_dom_entries;
+
+    /* Array that holds the actual domain configuration entries. */
+    struct {
+        /** Domain ID. */
+        int32_t domid;
+
+        /** Array with IDs of the assigned CPUs for the domain. */
+        int32_t* cpus; 
+        
+        /** Number of element in the array of assigned CPUs. */
+        int32_t num_of_cpus;
+
+        /** Specification of the gang-scheduling policy for the domain. */
+        gang_sched_policy_t gang_sched_policy;
+
+    } dom_entries[GANG_SCHED_MAX_DOMAINS];
+};
+
+typedef struct gang_sched_params gang_sched_params_t;
+
+
+
+/** 
+ * Sets the configuration parameters for the specified gang-scheduled domains. 
+ * @param[in] xch Xen Control Interface handle. 
+ * @param[in] cpupool_id identifier of the CPU pool.
+ * @param[in] params configuration parameters, including CPU mask and time
+ *            multiplexing policy. 
+ * @return 0 if successful, otherwise an error. 
+ */
+int xc_sched_gang_params_set(xc_interface* xch, 
+                             uint32_t cpupool_id,
+                             gang_sched_params_t* params);
+
+/** 
+ * Returns the current configuration parameters for the specified gang-scheduled
+ * domains. 
+ * @param[in] xch Xen Control Interface handle. 
+ * @param[in] cpupool_id identifier of the CPU pool.
+ * @param[in,out] params configuration parameters, including CPU mask and time
+ *                multiplexing policy. 
+ * @return 0 if successful, otherwise an error. 
+ */
+int xc_sched_gang_params_get(xc_interface* xch,
+                             uint32_t cpupool_id,
+                             gang_sched_params_t* params);
+
+////////////////////////////////////////////////////////////////////////////////
 
 /**
  * This function sends a trigger to a domain.

@@ -1388,9 +1388,17 @@ static void schedule(void)
 
     ASSERT(prev->runstate.state == RUNSTATE_running);
 
-    TRACE_4D(TRC_SCHED_SWITCH,
-             prev->domain->domain_id, prev->vcpu_id,
-             next->domain->domain_id, next->vcpu_id);
+    //TRACE_4D(TRC_SCHED_SWITCH,
+    //         prev->domain->domain_id, prev->vcpu_id,
+    //         next->domain->domain_id, next->vcpu_id);
+
+    TRACE_6D(TRC_SCHED_SWITCH,
+             prev->domain->domain_id,
+             prev->vcpu_id,
+             next->domain->domain_id,
+             next->vcpu_id,
+             now, // Time at which the scheduler was called.
+             (NOW() - now)); // Scheduler's overhead; i.e., time the scheduler took to run.
 
     vcpu_runstate_change(
         prev,

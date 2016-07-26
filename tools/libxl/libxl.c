@@ -5818,6 +5818,21 @@ int libxl_get_scheduler(libxl_ctx *ctx)
     return sched;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// Functions related to the integrated gang scheduler for Xen.
+////////////////////////////////////////////////////////////////////////////////
+
+static int sched_gang_domain_set(libxl__gc* gc, uint32_t domid,
+                                 const libxl_domain_sched_params* scinfo)
+{
+    // The gang scheduler does not use this way to take any domain-specific
+    // scheduling configuration.  So it simply returns success. 
+    return 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+
 static int sched_arinc653_domain_set(libxl__gc *gc, uint32_t domid,
                                      const libxl_domain_sched_params *scinfo)
 {
@@ -6382,6 +6397,9 @@ int libxl_vcpu_sched_params_set_all(libxl_ctx *ctx, uint32_t domid,
         break;
     case LIBXL_SCHEDULER_RTDS:
         rc = sched_rtds_vcpu_set_all(gc, domid, scinfo);
+        break;
+    case LIBXL_SCHEDULER_GANG:
+        ret=sched_gang_domain_set(gc, domid, scinfo);
         break;
     default:
         LOG(ERROR, "Unknown scheduler");

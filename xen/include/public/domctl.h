@@ -36,6 +36,7 @@
 #include "grant_table.h"
 #include "hvm/save.h"
 #include "memory.h"
+#include "gang_sched_policies.h" 
 
 #define XEN_DOMCTL_INTERFACE_VERSION 0x0000000b
 
@@ -349,6 +350,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_max_vcpus_t);
 #define XEN_SCHEDULER_CREDIT2  6
 #define XEN_SCHEDULER_ARINC653 7
 #define XEN_SCHEDULER_RTDS     8
+#define XEN_SCHEDULER_GANG     8
 
 typedef struct xen_domctl_sched_credit {
     uint16_t weight;
@@ -398,6 +400,7 @@ struct xen_domctl_scheduler_op {
         xen_domctl_sched_credit_t credit;
         xen_domctl_sched_credit2_t credit2;
         xen_domctl_sched_rtds_t rtds;
+        gang_sched_policy_t gang;
         struct {
             XEN_GUEST_HANDLE_64(xen_domctl_schedparam_vcpu_t) vcpus;
             /*
