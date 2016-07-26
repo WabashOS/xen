@@ -1,0 +1,81 @@
+*******************************************************************************
+* Sleep and wakeup functions in Xen scheduling framework.
+*
+* Juan A. Colmenares <juancol@eecs.berkeley.edu>
+* 03/28/2014
+*******************************************************************************
+
+SUMMARY
+
+The idea is to understand functions vcpu_sleep_XXX(...) and vcpu_wake(...) and
+reconcile their implementation under gang scheduling. These functions are
+per-VCPU and not were designed and implemented with gang scheduling in mind.
+
+
+CONTENT
+
+Xen scheduler framework (in xen/common/schedule.c) implements:
+
+- Two VCPU sleep functions: 
+
+  << void vcpu_sleep_nosync(struct vcpu *v) >>
+  If the VCPU is NOT runnable, then this fuction calls the scheduler's specific
+  vcpu_sleep(...) function. 
+
+  << void vcpu_sleep_sync(struct vcpu *v) >>
+  It calls vcpu_sleep_nosync(...).
+
+- One VCPU wake: 
+  << void vcpu_wake(struct vcpu *d) >>
+  If VCPU is runnable but blocked (by blocking or polling), this function calls
+  the scheduler's specific wake(...) function.
+
+
+
+The above functions are called by functions in the file xen/common/domain.c.
+These are:
+
+   
+void vcpu_pause(struct vcpu *v) [ File: xen/common/domain.c ]
+|-> atomic_inc(&v->pause_count);
+    vcpu_sleep_sync(v)
+
+
+void vcpu_pause_nosync(struct vcpu *v) [ File: xen/common/domain.c ]
+|-> atomic_inc(&v->pause_count);
+    vcpu_sleep_nosync(v) 
+
+
+void vcpu_unpause(struct vcpu *v) [ File: xen/common/domain.c ]
+|-> if (atomic_dec_and_test(&v->pause_count)) // (VCPU's pause_count == 0)?
+        vcpu_wake(v);
+
+void domain_pause(struct domain *d) [ File: xen/common/domain.c ]
+|-> atomic_inc(&d->pause_count);
+    for_each_vcpu( domain, vcpu )
+        vcpu_sleep_sync(vcpu);
+
+
+void domain_unpause(struct domain *d) [ File: xen/common/domain.c ]
+|-> if (atomic_dec_and_test(&d->pause_count)) // (DOMAIN's pause_count == 0)?
+        for_each_vcpu( d, v )
+            vcpu_wake(v);
+
+
+The gang scheduling algorithm needs to differenciate functions
+vcpu_pause/vcpu_unpause from domain_pause/domain_unpause. For that, we use the
+atomic variables: 
+- struct vcpu -> pause_count. 
+- struct domain -> pause_count.
+
+
+RESOLUTION
+
+If domain->pause_count > 0, the domain's ticket goes to the set of tickets
+waiting for events. If domain->pause_count == 0 again, the domain's ticket is
+taken out of the set of tickets waiting for events and put back in the
+activation queue. 
+
+If vcpu->pause_count is > 0 and domain->pause_count == 0, the domain is schedule
+but another domain will run on its behave on the vcpu.
+

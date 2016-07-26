@@ -1,0 +1,206 @@
+*******************************************************************************
+* Order in which Xen calls the scheduler's callbacks during initialization.
+* (Notes)
+* 
+* Juan A. Colmenares <juancol@eecs.berkeley.edu>
+* 12/14/2013
+*******************************************************************************
+
+* Key Information:
+
+- CPU event sequences are explained in "include/xen/cpu.h"
+
+
+* Key Data Structs. 
+
+- struct scheduler [xen/xen/include/xen/sched-if.h : 120 ]
+  One per CPU
+  Includes:
+    - scheduler's name
+    - global data pointer (void* sched_data)
+    - operations (function pointers)
+
+- struct schedule_data [xen/xen/include/xen/sched-if.h : 35 ]
+  One per CPU
+  Includes:
+    - schedule lock
+
+- struct timer [ /xen/xen/include/xen/timer.h : 17 ]
+  One per CPU
+  Includes:
+    - expires (in nanoseconds since boot)
+    - function that executes in softirq context on expiry.
+    - data 
+    - CPU the timer is installed and runs.
+    - status
+
+
+
+* Scheduler Init Sequence
+
+__start_xen(...) function. [ /xen/xen/arch/x86/setup.c : 544 ]
+
+...
+
+|-> init_idle_domain() [ /xen/xen/arch/x86/setup.c : 184 ]
+    |-> scheduler_init() [ /xen/xen/common/schedule.c : 1358 ]
+        - Iterates over the schedulers calling global_init(), if not null.
+
+        |-> cpu_schedule_up(0) [ /xen/xen/common/schedule.c : 1294 ] 
+         - << Important function >>
+         - Early return for (CPU == 0)
+
+        |-> register_cpu_notifier(&cpu_schedule_nfb) [ /xen/xen/common/cpu.c : 63 ]
+         - Called with notifier block including function
+           cpu_schedule_callback(...) [ /xen/xen/common/schedule.c : 1331 ]
+           - << Important callback function >> It calls cpu_schedule_up(...) for
+             the other CPUs.
+
+        |-> SCHED_OP(&ops, init) --> A macro that calls 'init' function of the scheduler.
+
+        - Validates sched_ratelimit_us
+
+        - Creates the idle domain by calling
+          domain_create(domid = DOMID_IDLE, domcr_flags = 0, ssidref = 0)  
+          - After calling some initialization functions, it calls:
+          |-> sched_init_domain(struct domain* d) [ /xen/xen/common/schedule.c : 331 ] 
+              |-> SCHED_OP(DOM2OP(d), init_domain, d) --> A macro that calls 'init_domain' function of the scheduler.
+                 - e.g., the credit scheduler just returns if it is the idle domain.
+        |-> alloc_vcpu(idle_domain, vcpu_id = 0, cpu_id = 0) [  /xen/xen/common/domain.c : 111 ] 
+            |-> sched_init_vcpu(struct vcpu *v, unsigned int processor) [ /xen/xen/common/schedule.c : 187 ] 
+                - Sets the CPU affinity of the domain.
+                |-> v->sched_priv = SCHED_OP(DOM2OP(d), alloc_vdata, v, d->sched_priv) --> A macro that calls 
+                    'alloc_vdata' function of the scheduler.
+                |-> SCHED_OP(DOM2OP(d), insert_vcpu, v) --> A macro that calls 
+                    'insert_vcpu' function of the scheduler.
+            |-> void vcpu_check_shutdown(struct vcpu *v) [ /xen/xen/common/domain.c  : 93 ]
+                - If domain is shutting down it may call:
+                  - void vcpu_sleep_nosync(struct vcpu *v) that calls SCHED_OP(VCPU2OP(v), sleep, v)
+            |-> void domain_update_node_affinity(struct domain *d) [ /xen/xen/common/domain.c : 352 ]
+
+        - Calls function 'alloc_pdata(...)' of the scheduler. 
+
+    - set_current(idle_vcpu[0])
+    - this_cpu(curr_vcpu) = current 
+
+...
+
+|-> smp_prepare_cpus(unsigned int max_cpus) [ /xen/xen/arch/x86/smpboot.c : 721 ]
+    - Registers CPU notifiers to prepare CPUs to go up!
+    - Others CPU notifiers are registers in other places.
+
+...
+
+|-> do_presmp_initcalls() [ /xen/xen/common/kernel.c : 202 ]
+    Runs function declared with the macro 'presmp_initcall(fn)'
+
+- for each present CPU
+  |-> cpu_up(...) [ /xen/xen/common/cpu.c : 122 ] 
+      |-> notifier_rc = notifier_call_chain(&cpu_chain, CPU_UP_PREPARE, hcpu, &nb)
+          - Informs the registered notifiers about the event 'CPU_UP_PREPARE'.
+            The notifiers are registered via the function register_cpu_notifier(...)
+          - From scheduler's viewpoint, the important notifiers are in:
+            - << common/schedule.c >>
+              |-> cpu_schedule_up(unsigned int cpu) [ /xen/xen/common/schedule.c : 1294 ]
+                  - Sets the per-CPU scheduler variable.
+                  - Initilizes the timer for the CPU
+                  |-> alloc_vcpu(idle_domain, vcpu_id = cpu, cpu_id = cpu) [  /xen/xen/common/domain.c : 111 ] 
+                      |-> sched_init_vcpu(struct vcpu *v, unsigned int processor) [ /xen/xen/common/schedule.c : 187 ] 
+                          - Sets the CPU affinity of the domain.
+                          |-> v->sched_priv = SCHED_OP(DOM2OP(d), alloc_vdata, v, d->sched_priv) --> A macro that calls 
+                              'alloc_vdata' function of the scheduler.
+                          |-> SCHED_OP(DOM2OP(d), insert_vcpu, v) --> A macro that calls 
+                              'insert_vcpu' function of the scheduler.
+                      |-> void vcpu_check_shutdown(struct vcpu *v) [ /xen/xen/common/domain.c  : 93 ]
+                          - If domain is shutting down it may call:
+                            - void vcpu_sleep_nosync(struct vcpu *v) that calls SCHED_OP(VCPU2OP(v), sleep, v)
+                      |-> void domain_update_node_affinity(struct domain *d) [ /xen/xen/common/domain.c : 352 ]
+
+                   - Calls function 'alloc_pdata(...)' of the scheduler. 
+              
+
+|-> smp_cpus_done() [ /xen/xen/arch/x86/smpboot.c : 953 ] 
+    - After this function, all CPUs are up.
+    - All CPU_UP_PREPARE notifiers have run.
+
+|-> do_initcalls() [ /xen/xen/common/kernel.c : 209 ]
+    Runs function declared with the macro '__initcall(fn)'
+
+...
+
+|-> dom0 = domain_create(domid = 0, domcr_flags = DOMCRF_s3_integrity, ssiref = 0)
+    - Creates initial domain 0
+    - After calling some initialization functions, it calls:
+    |-> sched_init_domain(struct domain* d) [ /xen/xen/common/schedule.c : 331 ] 
+        |-> SCHED_OP(DOM2OP(d), init_domain, d) --> A macro that calls 'init_domain' function of the scheduler.
+            - e.g., the credit scheduler just returns if it is the idle domain.
+    |-> struct vcpu* alloc_dom0_vcpu0() [ /xen/xen/arch/x86/domain_build.c : 103 ]
+        |-> alloc_vcpu(dom0, vcpu_id = 0, cpu_id = 0) [  /xen/xen/common/domain.c : 111 ] 
+            |-> sched_init_vcpu(struct vcpu *v, unsigned int processor) [ /xen/xen/common/schedule.c : 187 ] 
+                - Sets the CPU affinity of the domain.
+                |-> v->sched_priv = SCHED_OP(DOM2OP(d), alloc_vdata, v, d->sched_priv) --> A macro that calls 
+                    'alloc_vdata' function of the scheduler.
+                |-> SCHED_OP(DOM2OP(d), insert_vcpu, v) --> A macro that calls 
+                    'insert_vcpu' function of the scheduler.
+            |-> void vcpu_check_shutdown(struct vcpu *v) [ /xen/xen/common/domain.c  : 93 ]
+                - If domain is shutting down it may call:
+                  - void vcpu_sleep_nosync(struct vcpu *v) that calls SCHED_OP(VCPU2OP(v), sleep, v)
+            |-> void domain_update_node_affinity(struct domain *d) [ /xen/xen/common/domain.c : 352 ]
+
+- Grabs the DOM0 command line
+
+|-> int __init construct_dom0(struct domain *d, ...) [ /xen/xen/arch/x86/domain_build.c : 310 ]
+    ...
+    - For each of the CPUs but CPU=0, 
+      |-> alloc_vcpu(dom0, vcpu_id = i, cpu_id = cpu) [  /xen/xen/common/domain.c : 111 ] 
+          |-> sched_init_vcpu(struct vcpu *v, unsigned int processor) [ /xen/xen/common/schedule.c : 187 ] 
+              - Sets the CPU affinity of the domain.
+              |-> v->sched_priv = SCHED_OP(DOM2OP(d), alloc_vdata, v, d->sched_priv) --> A macro that calls 
+                  'alloc_vdata' function of the scheduler.
+              |-> SCHED_OP(DOM2OP(d), insert_vcpu, v) --> A macro that calls 
+                  'insert_vcpu' function of the scheduler.
+          |-> void vcpu_check_shutdown(struct vcpu *v) [ /xen/xen/common/domain.c  : 93 ]
+              - If domain is shutting down it may call:
+                - void vcpu_sleep_nosync(struct vcpu *v) that calls SCHED_OP(VCPU2OP(v), sleep, v)
+          |-> void domain_update_node_affinity(struct domain *d) [ /xen/xen/common/domain.c : 352 ]
+
+...
+
+- Each processor ends up in the spinning in the function:
+  void idle_loop(void) [ /xen/xen/arch/x86/domain.c : 113 ] 
+
+
+
+* Take Away
+
+Xen calls the scheduler functions in the following order during the 
+initialization of the idle domain:
+
+- On processor 0:
+  1) global_init() [only once and never again]
+  2) init() [only once and never again]
+  --
+  3) init_domain() [for the idle domain]
+  4) alloc_vdata() [for CPU 0 and vCPU 0 for the idle domain]
+  5) insert_vcpu() [for the vCPU 0]
+  6) alloc_pdata() [for the CPU 0] ** Only called when initializing idle domain!
+
+ - On each of the other processors
+  7) alloc_vdata() [for CPU i and vCPU i for the idle domain]
+  8) insert_vcpu() [for the vCPU i]
+  9) alloc_pdata() [for the CPU i] ** Only called when initializing idle domain!
+
+
+Then, when creating the Domain 0, Xen calls the scheduler functions in the following order:  
+
+- On processor 0
+  1) init_domain() [for the Domain 0]
+  2) alloc_vdata() [for CPU 0 and vCPU 0 for the Domain 0]
+  3) insert_vcpu() [for the vCPU 0]
+  5) for each CPU but 0
+     5.1) alloc_vdata() [per CPU and vCPU]
+     5.2) insert_vcpu() [per vCPU]
+
+
+
+

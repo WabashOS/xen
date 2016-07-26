@@ -1,0 +1,178 @@
+*******************************************************************************
+* Guest scheduler operations with the gang scheduler.
+*
+* Juan A. Colmenares <juancol@eecs.berkeley.edu>
+* 03/05/2014
+*******************************************************************************
+
+SUMMARY
+
+Some guest scheduler operations, such as SCHEDOP_block, SCHEDOP_poll, and
+SCHEDOP_yield, work on a per-VCPU basis, and changing that will affect existing
+guest OSs that expect and rely on that behavior.  For that reason, the gang
+scheduler will implement those guest scheduler commands on a per-VCPU basis,
+too. 
+
+In addition, the gang scheduler will introduce gang-scheduled versions of those
+commands: SCHEDOP_GANG_block, SCHEDOP_GANG_poll, and SCHEDOP_GANG_yield.  
+The first two are particularly interesting for event-triggered domains
+hosting services and device drivers that exploit parallelism. 
+
+
+CONTENT
+
+The file 'include/public/sched.h' includes commands that a guest OS can send to
+the Xen domain scheduler. Among these commands are: 
+- SCHEDOP_yield 
+- SCHEDOP_block
+- SCHEDOP_poll
+These specific commands operate on a per-VCPU basis.
+
+It is easy to imagine gang-scheduled versions of these commands. For example,
+SCHEDOP_yield makes a gang-scheduled domain yield all its assigned CPUs in its
+current time slice.  This modified behavior, however, may break existing Xen guest OSs
+that expect and rely on the original behavior.  For example, the Linux spinlock
+implementation (in arch/x86/xen/) calls SCHEDOP_poll (via the function
+xen_poll_irq(...)).  
+
+Therefore, the gang scheduler implement those guest scheduler commands on a
+per-VCPU basis, too. The basic behavior is: When a domain calls one of those
+commands on one of its current VCPUs, the gang-scheduler will select a VCPU from
+another domain to run on behalf of the yielded or blocked VCPU. 
+In other words, a gang-scheduled domains that voluntarily yields or blocks a
+VCPU essentially *donates* its time slice (or part thereof) for that VCPU to the
+system.   
+
+Note, however, that a given command may have a different behavior based on the
+time-multiplexing policy of the domain.
+
+
+<<< SCHEDOP_yield >>>
+- GANG_NO_MUXING: Ignores the command.
+
+- GANG_TIME_TRIG_MUXING: The domain voluntarily yields the VCPU and donates the
+  rest of its current time slice. The VCPU will be running the next time slice. 
+
+- GANG_EVENT_TRIG_MUXING: The same.
+
+- GANG_BEST_EFFORT_MUXING: The same.
+
+
+<<< SCHEDOP_block >>>
+- GANG_NO_MUXING: Ignores the command.
+
+- GANG_TIME_TRIG_MUXING: Ignores the command.
+
+- GANG_EVENT_TRIG_MUXING: The domain voluntarily yields the VCPU and donates its
+  runnable time. The domain's VCPU does not run again until an event is
+  received. (Note: the event-triggering behavior is not present here; consider
+  this as legacy behavior.)
+
+- GANG_BEST_EFFORT_MUXING: The same.
+
+
+<<< SCHEDOP_poll >>>
+- The same as for SCHEDOP_block plus support for polling timeout.
+
+
+
+GANG-SCHEDULED VERSIONS OF GUEST SCHEDULER COMMANDS
+
+I believe it is important (or at least interesting) to provide and experiment
+with gang-scheduled version of the above guest scheduler commands, particularly
+for event-triggered domains hosting services and device drivers that exploit
+parallelism. 
+
+To avoid problems with existing guest OSs, new guest scheduler commands will be
+introduced to support gang-scheduled versions of BLOCK, POLL, AND YIELD. The
+new commands are: 
+- SCHEDOP_GANG_block (*)
+- SCHEDOP_GANG_poll  (*)
+- SCHEDOP_GANG_yield 
+
+(*) Major implementation emphasis as it is important for event-triggered domains
+hosting services and device drivers.
+
+Again, a given command may have a different behavior based on the
+time-multiplexing policy of the domain.  The expected behaviors, at least
+initially, are as follows:
+
+
+<<< SCHEDOP_GANG_block >>>
+- GANG_NO_MUXING: Ignores the command.
+
+- GANG_TIME_TRIG_MUXING: Ignores the command.
+
+- GANG_EVENT_TRIG_MUXING: Voluntarily yields *all* its VCPUs, and the
+  domain does not run again until an event is received.
+
+- GANG_BEST_EFFORT_MUXING: The same as GANG_EVENT_TRIG_MUXING. 
+
+
+<<< SCHEDOP_GANG_poll >>>
+- The same as for SCHEDOP_GANG_block plus support for polling timeout.
+
+
+<<< SCHEDOP_GANG_yield >>>
+- GANG_NO_MUXING: Ignores the command.
+
+- GANG_TIME_TRIG_MUXING: The domain voluntarily yields *all* its VCPUs and gives
+  up the current time slice. The domain (i.e., all its VCPUs) will be runnable
+  for the next time slice. 
+
+- GANG_EVENT_TRIG_MUXING: The same as GANG_TIME_TRIG_MUXING.
+
+- GANG_BEST_EFFORT_MUXING: The same as GANG_TIME_TRIG_MUXING.
+
+
+
+APPENDIX A: SEQUENCE OF FUNCTION CALLS PER COMMAND IN XEN
+
+File: xen/common/schedule.c
+
+<<< SCHEDOP_yield >>>
+
+do_sched_op(...) 
+|-> do_yield()
+    SCHED_OP(VCPU2OP(v), yield, v) [gang scheduler's yield(...) function]
+    It should raise the SCHEDULE_SOFTIRQ on the other CPUs of the CPU
+    cohort, if needed. 
+    ...
+    raise_softirq(SCHEDULE_SOFTIRQ)
+
+
+<<< SCHEDOP_block >>>
+
+do_sched_op(...) 
+|-> vcpu_block_enable_events()
+    local_event_delivery_enable()
+    vcpu_block()
+    |-> set '_VPF_blocked' bit of the current VCPU's pause_flags.
+        if no event need delivery
+            raise_softirq(SCHEDULE_SOFTIRQ)
+
+When an event comes, Xen (i.e., the scheduling framework) calls:
+|-> vcpu_unblock(...)
+    ...
+    vcpu_wake(...)
+    |-> If runnable, SCHED_OP(VCPU2OP(v), wake, v) [gang scheduler's wake(...) function]
+
+
+<<< SCHEDOP_poll >>>
+|-> copy_from_guest(...) [the arguments]
+    do_poll(...)
+    |-> ... 
+        set '_VPF_blocked' bit of the current VCPU's pause_flags.
+        set vcpu_id bit on domain's poll_mask 
+        ...
+        if no event need delivery and other checks pass
+            raise_softirq(SCHEDULE_SOFTIRQ)
+
+When an event comes, Xen (i.e., the scheduling framework) calls:
+|-> vcpu_unblock(...)
+    ...
+    vcpu_wake(...)
+    |-> If runnable, SCHED_OP(VCPU2OP(v), wake, v) [gang scheduler's wake(...) function]
+
+
+

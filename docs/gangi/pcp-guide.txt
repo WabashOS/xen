@@ -1,0 +1,55 @@
+********************************************************************************
+Instructions for PCP @ LBL
+ 
+Nathan Pemberton <nathanp@berkeley.edu>
+Nov 13, 2014
+********************************************************************************
+
+When developing on the PCP machines at LBL the sequence is a bit different
+than that described in "ginea-pig-manual.txt" since these machines are largely
+already setup and have a different software environment.
+
+Dependencies:
+In order to run the custom Xen without wiping out the default version, you must
+install the standard Xen 4.4 package for your system. This is so that your
+custom Xen kernel can share the version-specific tools such as xl.
+
+You may also need to install a number of different packages in order for Xen to
+compile. Your mileage may vary as each machine may be configured slightly
+differently. If you have trouble check out
+http://wiki.xenproject.org/wiki/Compiling_Xen_From_Source#Build_Dependencies
+
+Here are the packages I had to install::
+
+$sudo yum install dev86 iasl libaio-devel ocaml yajl-devel uuid-develi \
+libuuid-devel 
+
+Building Xen:
+This guide assumes you already have the source code checked out to a local
+directory. 
+  $cd <XEN DIR>
+  $./configure --enable-stubdom
+  $make world
+
+Installing Xen:
+Instead of using "make install" to install xen, we are going to manually copy
+over the files that we need. This is because we want to install xen next to
+the existing installation instead of over it.
+  $sudo cp <XEN_DIR>/dist/install/boot/xen.gz /boot/xen-gang.gz
+
+Now we need to tell grub about our new version of Xen. Add the following line
+to /boot/grub/grub.conf (this is like the existing entry except renamed to
+gang-xen and pointing to the new xen-gang.gz):
+title Scientific Linux (gang-xen) 
+	root (hd0,0)
+	kernel /gang-xen.gz dom0_mem=1024M,max:1024M loglvl=all guest_loglvl=all
+	module /vmlinuz-3.10.43-11.el6.centos.alt.x86_64 ro root=/dev/mapper/vg_pcpf2-lv_root rd_NO_LUKS LANG=en_US.UTF-8 console=ttyS1,115200n8 rd_NO_MD SYSFONT=latarcyrheb-sun16 rd_LVM_LV=vg_pcpf2/lv_root crashkernel=auto rd_LVM_LV=vg_pcpf2/lv_swap  KEYBOARDTYPE=pc KEYTABLE=us rd_NO_DM
+	module /initramfs-3.10.43-11.el6.centos.alt.x86_64.img
+
+Now when you reboot you will see an entry for "Scientific Linux (gang-xen)" in
+your grub menu.
+
+=Launching Domains=
+Since we installed the standard Xen 4.4 before adding our custom kernel, all
+the tools that were installed by standard Xen should work for the custom
+version. From now on you can follow the guinee-pig manual.

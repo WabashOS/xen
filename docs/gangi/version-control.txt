@@ -1,0 +1,13 @@
+Information about how the gangi changes are managed with respect to the mainline
+Xen repository.
+
+= Status =
+Base Branch: Xen stable-4.7
+Last Updated: 08/26/16
+
+= Policy =
+Branch is updated to the most recent "stable" release. If someone wants/needs
+they can backport to an older release, but this might get ugly and is discouraged.
+
+= Procedure =
+TBD

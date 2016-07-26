@@ -1,0 +1,237 @@
+*******************************************************************************
+* Configuration and Resource Reassignment for Domains under Gang Scheduling
+*
+* Juan A. Colmenares <juancol@eecs.berkeley.edu>
+* Original: 04/11/2014
+* Updated: 07/15/2014
+*******************************************************************************
+
+SUMMARY
+
+Under gang scheduling, we want to start one or more (a group of) domains with
+their assigned hardware threads (HARTs) and timing parameters from command line
+or a configuration file. 
+
+In addition, we would want reassign HARTs and timing parameter to the domains
+manually and/or automatically, the latter being the more interesting since it
+enables adaptive resource allocation. 
+
+These notes describe how we *initially* put that together. 
+
+
+CONTENT
+
+1) Initial Approach
+
+We divide the physical CPUs (hardware threads) into two CPU pools:
+- Pool-0 (the default pool): It hosts Domain0 with one (e.g., 0) or at most a
+  few hardware threads.
+- GangSched-Pool: It hosts gang-scheduled domains on the rest of the hardware threads. 
+
+This allows us to have a reliable Domain0 during our initial testing and
+debugging. 
+
+Below are the configuration steps for this set up:
+- Start Domain0 in Default CPU Pool 0 (just start Xen)
+- Create the CPU Pool with the gang-scheduling algorithm: 
+    $> xl cpupool-create name=\"GangSched-Pool\" sched=\"gang\"
+
+- Move the desired CPUs from Pool-0 to GangSched-Pool. For example, in the case
+  of CPU #4:
+    $> xl cpupool-cpu-remove Pool-0 4
+    $> xl cpupool-cpu-add GangSched-Pool 4  
+
+- Create a new (gang-scheduled) domain and assign it to the GangSched-Pool
+    $> xl create my-domain pool=\"GangSched-Pool\"   
+ 
+- Adjust its CPU assignment and timing parameters via Gang Scheduling specific
+  functions.
+    << TBD >>
+
+
+Note that this is an initial approach. The idea is that later we will set the Gang
+Scheduler as the default scheduler (via boot GRUB parameters) and will have a
+single pool. In this case, Domain0 will be also scheduled under gang scheduling. 
+
+
+
+2) How to pass/change timing parameters to a gang-scheduled domain?  How to
+support resource redistribution (aka adaptation)?
+
+The XL tool is key to this, including the XL Domain Configuration File Syntax.
+The XL tool allows us to create a domain and modify its parameters at runtime.
+It source code is at xen/tools/libxl. 
+
+The Xen Control (XC) Interface (at xen/tools/libxc) is a library for low-level
+access to the Xen control interfaces. The XL tool depends on it. 
+Key control functions are declared in 'xenctrl.h'.
+
+
+We added to the XC Interface new functions specific to set and get the timing
+parameters for gang-scheduled domains. That is, those functions are specific to
+the gang scheduling algorithm. 
+
+These functions are divided into 2 groups: system-wide functions (aka SYSTEM
+CONTROL) and domain-specific functions (DOMAIN CONTROL). 
+
+System Control Functions
+
+- Command: XEN_SYSCTL_SCHEDOP_putinfo
+  Scheduler's function: gang_adjust_global(...)
+    Sets/changes timing parameters and CPU assignment of one or more domains.
+
+    NOTE: this is the key function for resource redistribution and adaptation.
+
+- Command: XEN_SYSCTL_SCHEDOP_getinfo
+  Scheduler's function: gang_adjust_global(...)
+    Reads global parameters of the gang scheduler. 
+
+Domain Control Functions
+
+- Commands: XEN_DOMCTL_SCHEDOP_putinfo 
+  Scheduler's function: gang_adjust(...)
+    Not implemented!
+
+- Commands:XEN_DOMCTL_SCHEDOP_getinfo
+  Scheduler's function: gang_adjust(...)
+    Reads current parameters of a given gang-scheduled domain. 
+
+
+
+Other functions of interest in the XC Interface are: 
+- xc_vcpu_getaffinity(xc_interface *xch, uint32_t domid, int vcpu, xc_cpumap_t cpumap)
+
+Note that this function returns the affinity of a specific VCPU of a domain.
+
+
+Also note that the function: 
+    xc_vcpu_setaffinity(xc_interface *xch, uint32_t domid, int vcpu, xc_cpumap_t cpumap)
+does not provide the functionality we need for adaptation. 
+This function changes the affinity of an individual VCPU of a domain. So, to
+move a domain due to resource distribution we must call this function multiple
+times, one for each VPCU of interest. Plus we may need to call other XC functions
+like to pause the domains, etc. 
+
+
+4) Creation and Start of a Domain and its Relation to Adaptive Behavior.
+
+To start a gang-scheduled domain, 
+- First, it must be created (using the function xc_domain_create(...)).
+- Second, it must be moved to the gang scheduling CPU pool (using the function
+  xc_cpupool_movedomain(...))
+
+  The call sequence is as follows:
+  |-> do_sysctl(...) [ File: xen/common/sysctl.c ] 
+      |-> cpupool_do_sysctl(...) [ File: xen/common/cpupool.c ] 
+          |-> int sched_move_domain(struct domain *d, struct cpupool *c) 
+              [ File: xen/common/schedule.c. Line: 229 ] 
+              |-> // gang_sched is the new/receiving scheduler for the domain.
+                  SCHED_OP(gang_sched, alloc_domdata, d)
+                  ...
+                  for_each_vcpu(d,v)
+                    SCHED_OP(gang_sched, alloc_vdata, v, domdata);
+                  ...
+
+                  // Pause domain on current scheduler
+                  domain_pause(d); 
+                 
+                  for_each_vcpu(d,v)
+                    SCHED_OP(old_sched, remove_vcpu, v);
+
+                  for_each_vcpu(d,v) {
+                    migrate_timer(...);
+                    migrate_timer(...);
+                    migrate_timer(...);
+
+                    ...
+
+                    SCHED_OP(gang_sched, insert_vcpu, v);
+
+                    SCHED_OP(old_sched, free_vdata, vcpudata);
+                  }
+
+                  ...
+                  domain_update_node_affinity(d);
+
+                  // Important: Initial domain's state is PAUSED.
+                  domain_unpause(d);
+                    
+                
+                  SCHED_OP(old_sched, free_domdata, old_domdata);
+
+                  xfree(vcpu_priv);
+
+
+
+- A domain added to the gang scheduling CPU pool starts 'not activated' in the
+  wait-for-event set (until its parameters are adjusted).
+
+- Then, its parameters can be adjusted via the function
+  xc_sched_gang_params_set(...). After this step, the domain is completely
+  functional on the gang-scheduling domain.
+
+
+
+5) Reassigning HARTs/CPUs and timing parameters of Domains.
+
+This is implemented in the gang scheduler's function 'gang_adjust_global' (i.e.,
+the function 'adjust_global' of Xen's scheduler). 
+
+
+It performs the following steps:
+
+- Validate the specified HART masks and multiplexing policy parameters 
+  for the domains. If they are all valid, proceed. Otherwise, return an error. 
+
+- Determine variables that assist the local schedulers to do their job. Two
+  important ones are the HART cohorts and multiplexing groups. 
+
+- Pause all the HARTs in the gang-scheduling pool so that they are able to make the
+  adjustment.   
+
+- Call a function that simultaneously runs on all the HARTs that belong to the
+  gang-scheduling pool. This function:
+  - updates the local scheduler for the corresponding HART according to the new
+    parameters of the domains. 
+  - only on a designated HART (e.g., the first HART of the pool), updates all
+    the domains with their new: 1) CPU mask, 2) multiplexing policy parameters,
+    and 3) HART cohort ID. 
+
+- Make all the CPUs in the gang-scheduling pool resume.
+
+
+6) Boot (GRUB) Parameters
+
+To the default domain scheduler at boot time, use the string parameter
+sched='SCHED_NAME' on Xen command line. For example: 
+
+    GRUB_CMDLINE_XEN_DEFAULT="... sched=gang"
+
+
+We can also set the minimum time slice at boot time [optional].  For that we can
+use the boot time parameter 'sched_ratelimit_us'.  By default
+sched_ratelimit_us=1000 (i.e., 1 ms). Xen checks that 100 <= sched_ratelime_us
+<= 500000, if not it uses the default value. For example:
+
+    GRUB_CMDLINE_XEN_DEFAULT="... sched_ratelimit_us=2000"  
+
+
+In addition, we can set the time upper bound for global adjustment [optional].
+The boot parameter is 'sched_gang_adj_time_upper_bound' and its units is
+milliseconds.
+
+NOTE: Currently we are experimenting with the 'sched_gang_adj_time_upper_bound'
+parameter and its default value is likely to change. Needless to say that you
+MUST BE CAREFUL when setting this parameter; make sure you know what you are
+doing.
+
+
+
+*) Miscellaneous
+
+ - How does a domain report back its performance to the Resource Manager,
+   running on Domain 0? XenMon seems to be the answer. 
+
+
+
+ 

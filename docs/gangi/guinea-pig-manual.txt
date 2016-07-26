@@ -1,0 +1,499 @@
+********************************************************************************
+* Gang Scheduling in Xen - The Ginea Pig's Manual
+* 
+* Juan A. Colmenares <juancol@eecs.berkeley.edu>
+********************************************************************************
+
+INTRODUCTION
+
+This document contains instructions for testers and early users of the
+gang scheduler in Xen.  
+
+
+TEST PLATFORM
+
+I run my initial tests on a computer with the following characteristics:
+
+- Maker/Model: Dell Optiplex 990
+- CPU: Quad Intel Core i7-2600 CPU @ 3.40GHz w/ hyperthreading enabled (i.e., 8
+  hardware threads)
+- RAM: 8GB
+- OS: Ubuntu 14.04.1 LTS (trusty). Linux 3.13.0-32-generic #57-Ubuntu SMP Tue
+  Jul 15 03:51:08 UCT 2014
+
+Instructions and notes below as for this platform, in particular for the OS
+platform.. 
+
+Important Note: 
+Set up LVM (Logical Volume Management) during Ubuntu installation. This is
+important because the instructions below assume that!
+
+
+
+HOW TO BUILD AND INSTALL XEN WITH GANG SCHEDULING
+
+We assume your Ubuntu installation is fresh and Xen hasn't been installed before.
+
+Note that the instructions are the same for building and installing stock Xen.
+
+
+1. Install the required packages to compile Xen hypervisor and tools.
+
+$ sudo apt-get install libglib2.0-dev libyajl-dev libaio1 libaio-dev uuid-dev \
+  iasl bcc bin86 python-dev  libncurses-dev  uuid-dev libpixman-1-dev \
+  libssl-dev markdown transfig bison flex libghc-zlib-dev ocaml-nox \
+  ocaml-findlib checkpolicy bridge-utils libbz2-dev liblzma-dev \
+  liblzo2-dev gcc-multilib g++-multilib texinfo gettext
+
+2. Also install git, gitk, and your preferred editor (in my case vim). 
+
+$ sudo apt-get install git gitk vim exuberant-ctags cscope 
+
+The tools ctags (exuberant-ctags) and cscope are convenient.
+
+3. Clone our git repository with Xen and checkout the 'gang-sched' branch
+(make sure you have the right permissions).
+
+$ git clone git-tess@tessellation.cs.berkeley.edu:tessellation_2/xen.git
+$ git checkout -b gang-sched origin/gang-sched
+
+
+
+4. Build and install the Xen hypervisor and its tools.
+
+$ cd $GIT/xen
+$ ./configure --enable-stubdom
+$ make world
+$ sudo make install
+$ sudo ldconfig -v 
+
+
+5. Update GRUB2 files to make GRUB menu visible and add the Xen entry
+
+- Edit the following lines in the file '/etc/default/grub':
+...
+#GRUB_HIDDEN_TIMEOUT=  # You'll need to press any key during
+                       # boot to get to the GRUB menu.
+GRUB_HIDDEN_TIMEOUT_QUIET=false
+...
+GRUB_TERMINAL=console
+
+- Run the command:
+$ sudo update-grub
+
+
+6. Set up the serial console in GRUB2 
+
+Source: http://wiki.xen.org/wiki/Xen_Serial_Console
+
+- Add the following lines to the file '/etc/default/grub':
+
+# Setup for serial console.
+GRUB_CMDLINE_XEN="loglvl=all guest_loglvl=all com1=115200,8n1 console=com1,vga"
+GRUB_CMDLINE_LINUX="console=hvc0 earlyprintk=xen"
+
+- Run the command:
+$ sudo update-grub
+
+Now you can use a serial communication program (e.g., minicom or screen) to see
+Xen's log messages.
+
+
+7. Force Domain 0 to run ONLY on CPU 0
+
+Source: http://xenbits.xenproject.org/docs/unstable/misc/xen-command-line.html
+
+- Edit '/etc/default/grub' and add the following parameters to GRUB_CMDLINE_XEN:
+GRUB_CMDLINE_XEN="dom0_max_vcpus=1 dom0_vcpus_pin ..."
+
+- Run the command:
+$ sudo update-grub
+
+
+8. Reboot into Xen
+
+- Press any key while but to get to the GRUB menu. Then choose the Xen option.
+
+- Start 'xencommons' service
+$ sudo service xencommons start
+
+- Check shared library dependencies of the 'xl' tool
+$ ldd `which xl`
+
+- Try to run xl [You must have root privileges] 
+$ sudo xl info
+$ sudo xl list -v 
+
+
+
+CREATE A SIMPLE PARAVIRTUALIZED GUEST VM
+
+Follow basic instructions at: https://help.ubuntu.com/community/Xen
+
+Any deviation from the instructions is described below.
+
+- Installing Xen
+
+SKIP IT! You already did it from the source.
+
+
+- Network Configuration
+
+The following commands didn't work on my machine:
+$ sudo update-rc.d network-manager disable
+$ sudo /etc/init.d/network-manager stop
+
+If you experience the same, remove the NetworkManager from the system via: 
+
+$ sudo apt-get purge network-manager
+
+
+Next follow the instructions and edit /etc/network/interfaces to make it look
+like this:
+--------------------------------------------------------------------------------
+auto lo
+iface lo inet loopback
+
+auto xenbr0
+iface xenbr0 inet dhcp
+    bridge_ports eth0
+
+auto eth0
+iface eth0 inet manual
+--------------------------------------------------------------------------------
+
+Or, if you want a static IP address:
+
+--------------------------------------------------------------------------------
+auto lo
+iface lo inet loopback
+
+auto xenbr0
+iface xenbr0 inet static
+    bridge_ports eth0
+    address 192.168.1.2
+    broadcast 192.168.1.255
+    netmask 255.255.255.0
+    gateway 192.168.1.1
+    dns-nameservers 192.168.1.254 8.8.8.8
+    dns-search foo.org bar.com  
+
+auto eth0
+iface eth0 inet manual
+--------------------------------------------------------------------------------
+
+Thus, the ifup utility can be used to configure eth0 once NetworkManager is
+gone.
+
+Then, restart networking to enable xenbr0 bridge and eth0:
+
+$ sudo ifdown eth0 && sudo ifup xenbr0 && sudo ifup eth0
+
+
+- Making room for Logical Volumes of Guest VMs.
+
+By default Ubuntu installation creates the 'root' logical volume under the
+'ubuntu-vg' volume group and it gives 'root' logical volume most of the space.
+So, you may find that there is no sufficient space for the logical volumes for
+the guest VMs.  If that is the case, you will see that following command fails: 
+
+$ sudo lvcreate -L 4G -n ubuntu-pv /dev/ubuntu-vg
+
+
+To shrink the 'root' logical volume, follow the steps below
+(obtained from
+http://askubuntu.com/questions/124465/how-do-i-shrink-the-root-logical-volume-lv-on-lvm):
+
+- Boot Ubuntu 14.04.1 from USB or Live CD (as you cannot shrink the logical
+  volume without umounting it).
+
+- Install LVM (But you may find that it is already there. Sweet!)
+$ sudo apt-get install lvm2
+
+- List the current logical volumes.
+$ sudo lvs
+
+- Shrink the logical volume 'LV' under the volume group 'VG' 100GBytes with the command:
+$ sudo lvreduce --resizefs --size -100G /dev/<VG>/<LV>
+
+In my case I use the command:
+$ sudo lvreduce --resizefs --size -100G /dev/ubuntu-vg/root
+
+Now you can proceed!
+
+
+- Manually creating a PV Guest VM
+
+Create the logical volume 'ubuntu-pv' in the volume group 'ubuntu-vg':
+$ sudo lvcreate -L 4G -n ubuntu-pv /dev/ubuntu-vg
+
+Choose an archive mirror from https://launchpad.net/ubuntu/+archivemirrors and
+get the netboot images:
+$ sudo mkdir -p /var/lib/xen/images/ubuntu-netboot
+$ cd /var/lib/xen/images/ubuntu-netboot
+$ sudo wget http://mirror.anl.gov/pub/ubuntu/dists/saucy/main/installer-amd64/current/images/netboot/xen/initrd.gz
+$ sudo wget http://mirror.anl.gov/pub/ubuntu/dists/saucy/main/installer-amd64/current/images/netboot/xen/vmlinuz
+
+Note: I chose Ubuntu 'saucy' release. I had issues installing 'precise'. 
+
+
+Set up the initial guest configuration: ~/xen-guest-conf/ubuntu-pv.cfg 
+
+--------------------------------------------------------------------------------
+name = "ubuntu-pv"
+memory = 256
+disk = ['phy:/dev/ubuntu-vg/ubuntu-pv,xvda,w']
+vif = [' ']
+kernel = "/var/lib/xen/images/ubuntu-netboot/vmlinuz"
+ramdisk = "/var/lib/xen/images/ubuntu-netboot/initrd.gz"
+extra = "debian-installer/exit/always_halt=true -- console=hvc0"
+--------------------------------------------------------------------------------
+
+Start the VM and connect to console (-c)
+$ sudo xl create ubuntu-pv.cfg -c 
+
+
+Then, do the install. Once the install is done, the VM will shutdown. 
+
+
+Once installed, we can use pygrub as the bootloader. For that, change the guest
+configuration (~/xen-guest-conf/ubuntu-pv.cfg) as follows:
+
+--------------------------------------------------------------------------------
+name = "ubuntu-pv"
+memory = 256
+disk = ['phy:/dev/ubuntu-vg/ubuntu-pv,xvda,w']
+vif = [' ']
+bootloader = "pygrub"
+
+#kernel = "/var/lib/xen/images/ubuntu-netboot/saucy/vmlinuz"
+#ramdisk = "/var/lib/xen/images/ubuntu-netboot/saucy/initrd.gz"
+#extra = "debian-installer/exit/always_halt=true -- console=hvc0"
+--------------------------------------------------------------------------------
+
+
+Start the VM and connect to console (-c):
+$ sudo xl create /etc/xen/ubuntu.cfg -c
+
+After playing with it, you can shutdown the guest OS with the command:
+you@guest>$ sudo shutdown -h now
+
+
+- Manually installing an HVM Guest VM
+
+Download Install ISO from http://www.ubuntu.com/download/desktop.
+(I downloaded ubuntu-14.04.1-desktop-amd64.iso into my home directory).
+
+Create the logical volume 'ubuntu-hvm' in the volume group 'ubuntu-vg':
+$ sudo lvcreate -L 8G -n ubuntu-hvm /dev/ubuntu-vg
+
+
+Set up the initial guest configuration: ~/xen-guest-conf/ubuntu-hvm.cfg
+
+--------------------------------------------------------------------------------
+builder = "hvm"
+name = "ubuntu-hvm"
+memory = "512"
+vcpus = 1
+vif = ['']
+disk = ['phy:/dev/ubuntu-vg/ubuntu-hvm,hda,w','file:/home/<USERNAME>/ubuntu-14.04.1-desktop-amd64.iso,hdc:cdrom,r']
+vnc = 1
+boot="dc"
+--------------------------------------------------------------------------------
+
+Start the VM.
+$ sudo xl create ubuntu-hvm.cfg
+
+Install a VNC viewer (if needed) and run it.
+$ sudo apt-get install gvncviewer
+$ gvncviewer localhost:0
+
+
+Then, do the install. Once the install is done, shutdown the VM.
+
+
+After the install you can optionally remove the CDROM from the config and/or
+change the boot order.  For that, change the guest configuration
+(~/xen-guest-conf/ubuntu-hvm.cfg) as follows:
+
+--------------------------------------------------------------------------------
+builder = "hvm"
+name = "ubuntu-hvm"
+memory = "512"
+vcpus = 1
+vif = ['']
+disk = ['phy:/dev/ubuntu-vg/ubuntu-hvm,hda,w']
+#disk = ['phy:/dev/ubuntu-vg/ubuntu-hvm,hda,w','file:/home/<USERNAME>/ubuntu-14.04.1-desktop-amd64.iso,hdc:cdrom,r']
+vnc = 1
+boot="c"
+#boot="dc"
+--------------------------------------------------------------------------------
+
+Start the VM and the VNC Viewer again.
+$ sudo xl create ubuntu-hvm.cfg
+$ gvncviewer localhost:0 
+
+
+RUN AN UNPRIVILEGED DOMAIN USING THE GANG SCHEDULING DOMAIN
+
+Assume we just boot the host and Domain 0 is the only domain running.
+
+- Confirm this by listing the current domains on the host.
+$ sudo xl list
+
+- List the current CPU pools on the host. 
+$ sudo xl cpupool-list
+
+- Now list the current CPU pools on the host with their CPU list. 
+$ sudo xl cpupool-list -c
+
+- Remove all but one the CPUs from the CPU pool 'Pool-0'. 
+  We leave 'Pool-0' only with CPU 0.
+$ sudo xl cpupool-cpu-remove Pool-0 7
+$ sudo xl cpupool-cpu-remove Pool-0 6
+$ sudo xl cpupool-cpu-remove Pool-0 5
+$ sudo xl cpupool-cpu-remove Pool-0 4
+$ sudo xl cpupool-cpu-remove Pool-0 3
+$ sudo xl cpupool-cpu-remove Pool-0 2
+$ sudo xl cpupool-cpu-remove Pool-0 1
+
+- Create the CPU Pool with the gang-scheduling algorithm: 
+$ sudo xl cpupool-create name=\"GangSched-Pool\" sched=\"gang\"
+    
+- Assigned the desired CPUs from Pool-0 to GangSched-Pool. For example:
+$ sudo xl cpupool-cpu-add GangSched-Pool 7
+$ sudo xl cpupool-cpu-add GangSched-Pool 6
+$ sudo xl cpupool-cpu-add GangSched-Pool 5
+$ sudo xl cpupool-cpu-add GangSched-Pool 4
+$ sudo xl cpupool-cpu-add GangSched-Pool 3
+$ sudo xl cpupool-cpu-add GangSched-Pool 2
+$ sudo xl cpupool-cpu-add GangSched-Pool 1
+
+- Create a new domain 'my-domain' in the default CPU pool (my-domain.cfg is the
+  configuration file for the guest domain).
+$ sudo xl create my-domain.cfg
+
+- Pause the domain (e.g., after confirming it is running).
+$ sudo xl pause my-domain
+
+- Move 'my-domain' to the GangSched-Pool
+$ sudo xl cpupool-migrate my-domain GangSched-Pool
+
+
+NOTE: 
+After this, DO NOT unpause 'my-domain' with the XL command:
+$ sudo xl unpause my-domain [Currently this makes the system crash!]
+
+Similar problems are caused if you create 'my-domain' and assign it directly to
+the GangSched-Pool with the command:
+$ sudo xl create my-domain pool=\"GangSched-Pool\"
+
+
+- For the domain 'my-domain' to be unpaused and run under the gang scheduler, you need
+  to set its CPU assignment and timing parameters via Gang Scheduling specific
+  functions.
+  << TBD >>
+
+   
+
+
+KNOWN ISSUES
+
+- Unpausing a guest domain in the gang scheduling pool makes the system crash
+  (freeze or reboot). 
+
+This is a problem in the current prototype implementation of the gang scheduler,
+which we'll fix later.  The problem is that at the time the new domain is
+unpaused the gang scheduler is not ready to handle the function vcpu-wake(...). 
+
+This problem appears in different cases:
+When the guest domain is created in the CPU pool with gang scheduling, with the
+command:
+$ sudo xl create my-domain pool=\"GangSched-Pool\"
+
+If the domain is created the Default CPU pool and then migrated to the
+GangSched-Pool, without the domain being paused. 
+
+
+
+
+TO-DO LIST 
+
+
+- Add support for the new gang scheduler in tool/libxl and other necessary tool
+  libs.
+Modified files: tool/libxl/libxl.c and tool/libxl/libxl_types.idl.
+Still need to test.
+
+-- Create command that allows the user to assign CPU and time scheduling
+parameters to a gang-scheduled domain.
+
+
+
+
+MISCELLANEOUS
+
+
+- Installing Ubuntu Guest OS on a Disk Image 
+
+Download the Ubuntu ISO image (e.g., ubuntu-14.04.1-desktop-amd64.iso) to your home directory.
+
+Create the directory xen-guest-conf.
+
+$ cd; mkdir xen-guest-conf; cd xen-guest-conf
+
+Create a disk image of 16GB for the root filesystem of the guess OS.
+
+$ dd if=/dev/zero of=hdd-ubuntu-hvm.img bs=1024k seek=16384 count=0
+
+Create a filesystem on the this image 
+
+$ mkfs -t ext4 hdd-ubuntu-hvm.img
+
+
+Set up the initial guest configuration: ~/xen-guest-conf/ubuntu-hvm.cfg
+
+--------------------------------------------------------------------------------
+builder = "hvm"
+name = "ubuntu-hvm"
+memory = "512"
+vcpus = 1
+vif = ['']
+disk = ['file:/home/<USERNAME>/xen-guest-conf/hdd-ubuntu-hvm.img,hda,w','file:/home/<USERNAME>/ubuntu-14.04.1-desktop-amd64.iso,hdc:cdrom,r']
+
+vnc = 1
+boot="dc"
+--------------------------------------------------------------------------------
+
+Start the VM.
+$ sudo xl create ubuntu-hvm.cfg
+
+Install a VNC viewer (if needed) and run it.
+$ sudo apt-get install gvncviewer
+$ gvncviewer localhost:0
+
+
+Then, do the install. Once the install is done, shutdown the VM.
+
+
+After the install you can optionally remove the CDROM from the config and/or
+change the boot order.  For that, change the guest configuration
+(~/xen-guest-conf/ubuntu-hvm.cfg) as follows:
+
+--------------------------------------------------------------------------------
+builder = "hvm"
+name = "ubuntu-hvm"
+memory = "512"
+vcpus = 1
+vif = ['']
+disk = ['file:/home/<USERNAME>/xen-guest-conf/hdd-ubuntu-hvm.img,hda,w']
+#disk = ['file:/home/<USERNAME>/xen-guest-conf/hdd-ubuntu-hvm.img,hda,w','file:/home/<USERNAME>/ubuntu-14.04.1-desktop-amd64.iso,hdc:cdrom,r']
+
+vnc = 1
+boot="c"
+#boot="dc"
+--------------------------------------------------------------------------------
+
+Start the VM and the VNC Viewer again.
+$ sudo xl create ubuntu-hvm.cfg
+$ gvncviewer localhost:0 

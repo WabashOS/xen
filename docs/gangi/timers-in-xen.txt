@@ -1,0 +1,202 @@
+********************************************************************************
+* Understanding the Use of the Scheduler Timer in Xen.
+* Author: Juan A. Colmenares <juancol@eecs.berkeley.edu>
+********************************************************************************
+
+* Timers in Xen Scheduler
+
+FILE: xen/common/schedule.c
+
+This file includes various timer handlers:
+
+- static void s_timer_fn(void *unused) [**] 
+  The scheduler timer: force a run through the scheduler.
+  This is key to our work on gang scheduling. 
+
+- static void vcpu_periodic_timer_fn(void *data);
+  Per-VCPU periodic timer function: sends a virtual timer interrupt.
+
+- static void vcpu_singleshot_timer_fn(void *data);
+  Per-VCPU single-shot timer function: sends a virtual timer interrupt.
+
+- static void poll_timer_fn(void *data);
+  SCHEDOP_poll timeout callback.
+
+
+In xen/common/schedule.c, the per-CPU/per-HART scheduler timer:
+
+-  init_timer(&sd->s_timer, s_timer_fn, NULL, cpu);
+
+is initialized in the function:
+
+- static int cpu_schedule_up(unsigned int cpu) [Line: 1295] 
+
+
+Also, in this file, the per-VCPU timers: 
+
+- init_timer(&v->periodic_timer, vcpu_periodic_timer_fn, v, v->processor);
+- init_timer(&v->singleshot_timer, vcpu_singleshot_timer_fn, v, v->processor);
+- init_timer(&v->poll_timer, poll_timer_fn, v, v->processor);
+
+are initialized in the function: 
+
+- int sched_init_vcpu(struct vcpu *v, unsigned int processor) [Line: 188] 
+
+
+
+
+* Boot Functions Related to Timer and Time Initialization  
+
+__start_xen(...) function. [ /xen/xen/arch/x86/setup.c : 544 ]
+...
+|-> void __init smp_prepare_cpus(unsigned int max_cpus) [File: xen/xen/arch/x86/smpboot.c]
+    - Registers CPU notifiers to prepare CPUs to go up!
+    - Others CPU notifiers are registers in other places.
+    ...
+    |-> void __init setup_boot_APIC_clock(void) [File: xen/xen/arch/x86/smpboot.c]
+      |-> setup_APIC_timer() [File: xen/xen/arch/x86/apic.c]
+
+|-> int __init init_xen_time(void)
+    - ...
+    - open_softirq(TIME_CALIBRATE_SOFTIRQ, local_time_calibration);
+    - ... 
+    - rdtscll(this_cpu(cpu_time).local_tsc_stamp) // System time (get_s_time()) starts ticking from now.
+    - ...
+    - init_percpu_time();
+    - init_timer(&calibration_timer, time_calibration, NULL, 0);
+    - set_timer(&calibration_timer, NOW() + EPOCH);
+
+
+arch/x86/boot/x86_64.S
+...
+|-> void start_secondary(void *unused) [File: xen/xen/arch/x86/smpboot.c]
+    - ...
+    - spm_callin() // Marks the end of the most fragile part of booting
+    - ... 
+    |->void __devinit setup_secondary_APIC_clock(void) [File: xen/xen/arch/x86/smpboot.c]
+       |-> setup_APIC_timer() [File: xen/xen/arch/x86/apic.c]
+    - init_percpu_time();
+    - local_irq_enable(); // CPU can take interrupts; it is officially up.
+    - ...
+    - startup_cpu_idle_loop();
+
+
+
+* Understanding Function set_timer(...) [File: xen/xen/common/timer.c] 
+
+- Deactives the given timer if it is active.
+- Activates the timer with the new expiration time by calling:
+  - static inline void activate_timer(struct timer *timer)
+    - Adds the timer to the heap/list of timers
+    - cpu_raise_softirq(timer->cpu, TIMER_SOFTIRQ);
+
+
+
+* How does Xen handle a timer interrupt handled?
+
+[We just focus on x86 architecture specific files]
+
+The entry function is:
+
+do_IRQ(...) [File: arch/x86/irq.c. Line: 804]
+- ...
+|-> action->handler(...)
+    ...
+    |-> apic_timer_interrupt(...) [File: xen/arch/x86/apic.c. Line: 1300]
+    (Function associated to LOCAL_TIMER_VECTOR during initialization)
+      - ack_APIC_irq();
+      - perfc_incr(apic_timer);
+      - raise_softirq(TIMER_SOFTIRQ) [File: xen/common/softirq.c. Line: 91]
+        (This function indicates that a timer event happened and it must be
+        handled by the registered handler function timer_softirq_action(...)).
+- jmp ret_from_intr [File: xen/arch/x86/x86_64/entry.S] 
+  - ...
+  |-> jz test_all_events
+      - cli // Disable interrupts
+      - if soft IRQs are pending
+        |-> jne process_softirqs (jump to a label)
+            - sti // Re-enable interrupt 
+            - ...
+            |-> call do_softirq() [File: xen/common/softirq.c. Line: 59]
+                |-> __do_softirq(...)
+                    - ...
+                    - Call the handlers of all pending soft IRQs. One of them is
+                      because TIMER_SOFTIRQ was raised above:
+                      |-> timer_softirq_action(...)
+                          - Execute the functions associated with expired timers in the
+                            ready heap first and then in the ready list.
+                          - If the scheduler timer has expired, then it calls the
+                            scheduler timer's function:
+                          |-> s_timer_fn(...) [File: xen/common/schedule.c. Line: 1266] 
+                              - raise_softirq(SCHEDULE_SOFTIRQ)
+                                (This function indicates that it is time to run
+                                the function schedule(), which is the function
+                                associated with SCHEDULE_SOFTIRQ)
+                       - ...
+                       |-> schedule(...) [File: xen/common/schedule.c. Line: 1145]
+                           (This function is called becuase SCHEDULE_SOFTIRQ was
+                           raised above).
+                       - ...
+                       - Return once there is no pending soft IRQs.
+                  - Return
+              - ...
+              - test guest events
+              - if pending upcall
+                - jump to restore_all_guest
+              - process guest events
+              - ...
+              - jmp test_all_events
+
+
+
+Note that all x86 vectors are defined in:
+- xen/arch/x86/i8259.c
+using macros defined in the same file and in:
+- xen/include/asm-x86/x86_64/asm_defns.h
+
+The key macros that call do_IRQ(...) and then do 'jmp ret_from_intr' are: 
+- BUILD_IRQ
+- BUILD_COMMON_IRQ
+both in xen/include/asm-x86/x86_64/asm_defns.h.
+
+
+
+
+* How is the function schedule() (in File: xen/xen/common/schedule.c) called the first time?
+
+The schedule() function is associated to the SCHEDULE_SOFTIRQ during
+initialization. This is done in the function:
+ 
+- void __init scheduler_init(void) [File: xen/xen/common/schedule.c. Line: 1359]
+  - ...
+  - open_softirq(SCHEDULE_SOFTIRQ, schedule);
+  - ...
+
+
+At the end of domain initialization, each CPU runs the function:
+
+- idle_loop() [File: xen/arch/x86/domain.c. Line:113]
+   - for (; ; )
+     - ...
+     |-> do_tasklet()
+         - if (list of tasklets is empty)
+           - raise_softirq(SCHEDULE_SOFTIRQ)
+     |-> do_softirq() [File: xen/common/softirq.c. Line: 59]
+         |-> __do_softirq(...)
+             - ...
+             - Call the handlers of all pending soft IRQs. One of them may be
+               schedule() because SCHEDULE_SOFTIRQ may have been raised above.
+               The scheduler timer's expiration time is set in the schedule()
+               function.
+  
+
+The next time a timer interrupt occurs:
+- the TIMER_SOFTIRQ is raised 
+- To handle TIMER_SOFTIRQ, the timer_softirq_action() is called, which raises SCHEDULE_SOFTIRQ
+- To handle SCHEDULE_SOFTIRQ, schedule() is called, which sets the expiration
+  time for the scheduler timer.
+
+
+
+
+
