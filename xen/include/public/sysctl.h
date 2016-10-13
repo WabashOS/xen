@@ -621,7 +621,7 @@ typedef struct gang_sched_domain_conf {
  * This structure is used to pass parameters for gang-scheduled domains from a
  * privileged domain (ie Domain 0) to Xen.
  */
-struct xen_sysctl_gang_schedule {
+typedef struct xen_sysctl_gang_schedule {
 
     /**  Holds the number of valid entries in the dom_entries[] array. */
     uint16_t num_dom_entries;
@@ -629,9 +629,7 @@ struct xen_sysctl_gang_schedule {
     /* Array that holds the domain configuration entries. */
     gang_sched_dom_conf_t dom_entries[GANG_SCHED_MAX_DOMAINS];
 
-};
-
-typedef struct xen_sysctl_gang_schedule xen_sysctl_gang_schedule_t;
+} xen_sysctl_gang_schedule_t;
 DEFINE_XEN_GUEST_HANDLE(xen_sysctl_gang_schedule_t);
 
 ////////////////////////////////////////////////////////////////////////////////

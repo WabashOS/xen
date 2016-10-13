@@ -968,7 +968,7 @@ xc_sched_arinc653_schedule_get(
  * This structure is very similar to 'xen_sysctl_gang_schedule_t' defined
  * $XEN_DIR/xen/include/public/sysctl.h.
  */
-struct gang_sched_params {
+typedef struct gang_sched_params {
 
     /**  Holds the number of valid entries in the dom_entries[] array. */
     uint16_t num_dom_entries;
@@ -988,9 +988,7 @@ struct gang_sched_params {
         gang_sched_policy_t gang_sched_policy;
 
     } dom_entries[GANG_SCHED_MAX_DOMAINS];
-};
-
-typedef struct gang_sched_params gang_sched_params_t;
+} gang_sched_params_t;
 
 
 

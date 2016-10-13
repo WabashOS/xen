@@ -6330,6 +6330,9 @@ int libxl_domain_sched_params_set(libxl_ctx *ctx, uint32_t domid,
     case LIBXL_SCHEDULER_RTDS:
         ret=sched_rtds_domain_set(gc, domid, scinfo);
         break;
+    case LIBXL_SCHEDULER_GANG:
+        ret = sched_gang_domain_set(gc, domid, scinfo);
+        break;
     default:
         LOG(ERROR, "Unknown scheduler");
         ret=ERROR_INVAL;
@@ -6399,7 +6402,8 @@ int libxl_vcpu_sched_params_set_all(libxl_ctx *ctx, uint32_t domid,
         rc = sched_rtds_vcpu_set_all(gc, domid, scinfo);
         break;
     case LIBXL_SCHEDULER_GANG:
-        ret=sched_gang_domain_set(gc, domid, scinfo);
+        LOG(ERROR, "per-VCPU parameter setting not supported for this scheduler");
+        rc = ERROR_INVAL;
         break;
     default:
         LOG(ERROR, "Unknown scheduler");

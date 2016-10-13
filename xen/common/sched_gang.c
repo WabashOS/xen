@@ -1079,7 +1079,7 @@ static int gang_init(struct scheduler* ops) {
 /** 
  * De-initializes and frees gang scheduler's private data struct. 
  */
-static void gang_deinit(const struct scheduler* ops) {
+static void gang_deinit(struct scheduler* ops) {
     gang_priv_data_t* pd = GANG_PRIV_DATA(ops);
     xfree(pd);
 }
@@ -1167,7 +1167,7 @@ gang_init_domain(const struct scheduler* ops, struct domain* dom) {
 
     gang_dom_info_t* dom_info = NULL;
 
-    if (dom == dom0) {
+    if (dom->domain_id == 0) {
         GANG_LOG("Error: Currently the gang scheduler cannot initialize " 
                 "the privileged domain (Domain 0).\n");   
         return -EINVAL; 
@@ -2815,7 +2815,8 @@ int __count_vcpus_in_domain(struct domain* d) {
  * @param dom_info
  */
 static
-void __setup_vcpus_for_domain(gang_dom_info_t* di) {
+void __setup_vcpus_for_domain(gang_dom_info_t* di)
+{
     
     struct domain* d;
 
@@ -2864,8 +2865,10 @@ void __setup_vcpus_for_domain(gang_dom_info_t* di) {
             migrate_timer(&v->singleshot_timer, cpuid);
             migrate_timer(&v->poll_timer, cpuid);
 
-            cpumask_clear(v->cpu_affinity);
-            cpumask_set_cpu(cpuid, v->cpu_affinity);
+            cpumask_clear(v->cpu_hard_affinity);
+            cpumask_clear(v->cpu_soft_affinity);
+            cpumask_set_cpu(cpuid, v->cpu_hard_affinity);
+            cpumask_set_cpu(cpuid, v->cpu_soft_affinity);
 
             lock = vcpu_schedule_lock_irq(v);
             v->processor = cpuid;
@@ -3428,7 +3431,8 @@ __smp_adjust_and_pause(gang_dom_info_t** arr,
 /** Makes the CPUs resume. */
 SUPPRESS_NOT_USED_WARN
 static void 
-__smp_resume_after_adjust(struct cpupool* cpu_pool) {
+__smp_resume_after_adjust(struct cpupool* cpu_pool)
+{
 
     int cpu;
 
@@ -3467,7 +3471,8 @@ __smp_resume_after_adjust(struct cpupool* cpu_pool) {
 /** Sets or fetchs scheduling parameters for all the domains. */
 static int 
 gang_adjust_global(const struct scheduler* ops, 
-                   struct xen_sysctl_scheduler_op* op) {
+                   struct xen_sysctl_scheduler_op* op)
+{
     // NOTE:
     // At least for the moment we divide the physical CPUs (hardware threads)
     // into two CPU pools:
@@ -3490,7 +3495,9 @@ gang_adjust_global(const struct scheduler* ops,
     struct domain* dom;
     struct cpupool* cpu_pool = NULL;
 
-    xen_sysctl_gang_schedule_t* params;
+    /* XXX Too lazy to refactor */
+    xen_sysctl_gang_schedule_t param_local;
+    xen_sysctl_gang_schedule_t* params = &param_local;
 
     int rc = 0;
     int err = 0;
@@ -3520,7 +3527,7 @@ gang_adjust_global(const struct scheduler* ops,
     GANG_LOGT("Start\n");
 
     // Verify that this function is being called from DOM0.
-    if (current->domain != dom0) {
+    if (current->domain->domain_id != 0) {
         printk("WARNING: %s(...) can only be called from DOM0\n", __func__);
         rc = -EPERM;
         goto EXIT_GANG_ADJUST_GLOBAL;
@@ -3558,7 +3565,11 @@ gang_adjust_global(const struct scheduler* ops,
     switch (op->cmd) {
     case XEN_SYSCTL_SCHEDOP_putinfo:
     {
-        get_xen_guest_handle(params, op->u.sched_gang.params);
+        if ( copy_from_guest(params, op->u.sched_gang.params, 1) )
+        {
+          rc = -EFAULT;
+          break;
+        }
 
         // Basic checks of parameters. 
         if (params->num_dom_entries < 1 ||
@@ -3863,9 +3874,8 @@ gang_adjust_global(const struct scheduler* ops,
     }
     case XEN_SYSCTL_SCHEDOP_getinfo:
     {
-        get_xen_guest_handle(params, op->u.sched_gang.params);
-        params->num_dom_entries = 0;
 
+        memset(params, 0, sizeof(*params));
         cpu_pool = cpupool_get_by_id(op->cpupool_id);
 
         // Current CPU cannot belong to the CPU pool for gang-scheduled domains.
@@ -3895,6 +3905,9 @@ gang_adjust_global(const struct scheduler* ops,
         }
 
         params->num_dom_entries = (uint16_t) dom_count;
+
+        if ( copy_to_guest(op->u.sched_gang.params, params, 1) )
+            rc = -EFAULT;
 
         break;
     }

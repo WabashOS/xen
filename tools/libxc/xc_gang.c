@@ -69,7 +69,8 @@ static SUPPRESS_NOT_USED_WARN
 void array_to_bitmap(int32_t* arr, 
                      int32_t arr_len, 
                      uint8_t* bitmap, 
-                     int32_t nr_bits) {
+                     int32_t nr_bits)
+{
     assert(arr != NULL);
     assert(arr_len >= 0);
     assert(bitmap != NULL);
@@ -98,7 +99,8 @@ static SUPPRESS_NOT_USED_WARN
 size_t bitmap_to_array(uint8_t* bitmap,
                        int32_t nr_bits,
                        int32_t* arr,
-                       int32_t arr_len) {
+                       int32_t arr_len)
+{
     size_t nr_set_bits = 0;
 
     assert(arr != NULL);
@@ -131,7 +133,8 @@ static SUPPRESS_NOT_USED_WARN
 int copy_params_into_sysctl(xc_interface* xch, 
                             gang_sched_params_t* src, 
                             xen_sysctl_gang_schedule_t* dst,
-                            xc_hypercall_buffer_array_t* hc_buf_arr) {
+                            xc_hypercall_buffer_array_t* hc_buf_arr)
+{
     int rc = 0;
 
     int cpumap_size;
@@ -207,7 +210,8 @@ int copy_params_into_sysctl(xc_interface* xch,
 static SUPPRESS_NOT_USED_WARN
 int reset_sysctl_and_alloc_bitmaps(xc_interface* xch,
                                    xen_sysctl_gang_schedule_t* sysctl_params,
-                                   xc_hypercall_buffer_array_t* hc_buf_arr) {
+                                   xc_hypercall_buffer_array_t* hc_buf_arr)
+{
     int rc = 0;
 
     int cpumap_size;
@@ -270,7 +274,9 @@ int reset_sysctl_and_alloc_bitmaps(xc_interface* xch,
 static SUPPRESS_NOT_USED_WARN
 int copy_sysctl_into_params(xc_interface* xch,
                             xen_sysctl_gang_schedule_t* src,
-                            gang_sched_params_t* dst) {
+                            xc_hypercall_buffer_array_t *cpumap_arr,
+                            gang_sched_params_t* dst)
+{
     int rc = 0;
 
     int cpumap_size;
@@ -281,6 +287,10 @@ int copy_sysctl_into_params(xc_interface* xch,
     // Size of the temporary array, 
     // equal to the number of bits in the CPU bitmap.
     int32_t tmp_arr_len = 0;
+ 
+    /* Used to translate from sysctl_bitmap to something usable.
+     * See xc_cpupool_getinfo for the example I'm copying*/   
+    xc_cpumap_t tmp_cpumap;
 
     assert(src != NULL);
     assert(dst != NULL);
@@ -296,24 +306,29 @@ int copy_sysctl_into_params(xc_interface* xch,
     assert(max_num_of_cpus > 0);
     assert(max_num_of_cpus <= cpumap_size * 8);
 
+    tmp_cpumap = xc_cpumap_alloc(xch);
 
     tmp_arr_len = cpumap_size * 8;
     tmp_arr = (int32_t*) malloc(tmp_arr_len * sizeof(int32_t));
 
-
     dst->num_dom_entries = src->num_dom_entries;
 
     for (uint16_t e = 0; e < src->num_dom_entries; e++) {
-
-        uint8_t* cpumap;
+        /* uint8_t* cpumap = NULL; */
         size_t nr_set_bits = 0;
+
+        /* Get out of the hypercall buffer and into something more manageable */
+        DECLARE_HYPERCALL_BUFFER(uint8_t, hc_cpumap);
+        hc_cpumap = xc_hypercall_buffer_array_get(xch, cpumap_arr, e,
+            hc_cpumap, cpumap_size);
+        memcpy(tmp_cpumap, hc_cpumap, cpumap_size);
 
         assert(src->dom_entries[e].cpumap.nr_bits == tmp_arr_len);
 
-        get_xen_guest_handle(cpumap, src->dom_entries[e].cpumap.bitmap);
+        /* get_xen_guest_handle(cpumap, src->dom_entries[e].cpumap.bitmap); */
 
         nr_set_bits =
-            bitmap_to_array(cpumap,
+            bitmap_to_array(tmp_cpumap,
                             src->dom_entries[e].cpumap.nr_bits,
                             tmp_arr, // Zeroed inside the function.
                             tmp_arr_len);
@@ -341,10 +356,10 @@ int copy_sysctl_into_params(xc_interface* xch,
     return rc;
 }
 
-
 int xc_sched_gang_params_set(xc_interface* xch, 
                              uint32_t cpupool_id,
-                             gang_sched_params_t* params) {
+                             gang_sched_params_t* params)
+{
 
     int rc = 0;
     xen_sysctl_gang_schedule_t __sysctl_params = { 0 };
@@ -399,7 +414,8 @@ OUT:
 
 int xc_sched_gang_params_get(xc_interface* xch,
                              uint32_t cpupool_id,
-                             gang_sched_params_t* params) {
+                             gang_sched_params_t* params)
+{
     int rc = 0;
     xen_sysctl_gang_schedule_t __sysctl_params = { 0 };
     xen_sysctl_gang_schedule_t* sysctl_params = &__sysctl_params;
@@ -450,10 +466,10 @@ int xc_sched_gang_params_get(xc_interface* xch,
         goto OUT;
     }
 
-    get_xen_guest_handle(sysctl_params,
-                         sysctl.u.scheduler_op.u.sched_gang.params);
+    /* get_xen_guest_handle(sysctl_params, */
+    /*                      sysctl.u.scheduler_op.u.sched_gang.params); */
 
-    rc = copy_sysctl_into_params(xch, sysctl_params, params);
+    rc = copy_sysctl_into_params(xch, sysctl_params, hc_buf_arr, params);
     if (rc) {
         PERROR("copy_sysctl_into_params(...) failed! Error code: %d \n", rc);
     }
